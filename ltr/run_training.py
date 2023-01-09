@@ -43,11 +43,13 @@ def main():
     parser = argparse.ArgumentParser(description='Run a train scripts in train_settings.')
     parser.add_argument('--train_module', 
                         # default='transt',
-                        default='SA_Tracker',
+                        # default='SA_Tracker',
+                        default='MA_Tracker',
                         type=str, help='Name of module in the "train_settings/" folder.')
     parser.add_argument('--train_name', 
                         # default='transt_dp',
-                        default='SA_Tracker_dp',
+                        # default='SA_Tracker_dp',
+                        default='MA_Tracker_dp',
                         type=str, help='Name of the train settings file.')
     parser.add_argument('--cudnn_benchmark', type=bool, default=True, help='Set cudnn benchmark on (1) or off (0) (default is on).')
 

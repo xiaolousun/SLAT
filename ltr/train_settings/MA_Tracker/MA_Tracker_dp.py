@@ -19,7 +19,7 @@ def run(settings):
     settings.local_rank = 0 # to adapt the ddp trainner
     settings.device = 'cuda'
     settings.description = 'TransT with default settings.'
-    settings.batch_size = 32
+    settings.batch_size = 8
     settings.num_workers = 0
     settings.multi_gpu = True
     settings.print_interval = 1

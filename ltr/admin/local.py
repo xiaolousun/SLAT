@@ -1,9 +1,9 @@
 class EnvironmentSettings:
     def __init__(self):
-        self.workspace_dir = '/data01/xlsun/code/TransT-M/results/SA_Tracker'   # Base directory for saving network checkpoints.
+        self.workspace_dir = '/home/xlsun/xlsun/code/SLAT'   # Base directory for saving network checkpoints.
         self.tensorboard_dir = self.workspace_dir + '/tensorboard/'    # Directory for tensorboard files.
         self.lasot_dir = '/data01/xlsun/dataset/LaSOT/LaSOTBenchmark'
-        self.got10k_dir = '/data01/xlsun/dataset/full_data/train_data'
+        self.got10k_dir = '/data/full_data/train'
         self.trackingnet_dir = '/home/cx/cx1/TrackingNet'
         self.coco_dir = '/data01/xlsun/dataset/coco2017'
         self.lvis_dir = ''

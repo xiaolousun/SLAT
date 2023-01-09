@@ -1,4 +1,5 @@
 from ltr import model_constructor
+from functools import reduce
 
 from util import box_ops
 from util.misc import (NestedTensor, nested_tensor_from_tensor,
@@ -24,6 +25,7 @@ from ltr.models.tracking.transt_seg import (TransTsegm, dice_loss, sigmoid_focal
 from ltr.models.tracking.transt_iouhead import TransTiouh
 from ltr.models.tracking.transt_iouh_seg import TransTiouhsegm
 from ltr.models.tracking.SA_Tracker_iouhead import MixTrackingiouh
+from ltr.models.neck.vit_encoder import Transformer as global_attention
 # from lib.models.mixformer.position_encoding import build_position_encoding
 
 # TODO: update the urls of the pre-trained models
@@ -385,7 +387,8 @@ class MixingBlock(nn.Module):
                  attn_drop=0.,
                  drop_path=0.,
                  act_layer=nn.GELU,
-                 norm_layer=nn.LayerNorm):
+                 norm_layer=nn.LayerNorm,
+                 global_attn=False):
         super().__init__()
         self.dim = dim
         self.num_heads = num_heads
@@ -395,6 +398,12 @@ class MixingBlock(nn.Module):
         conv_ratio = conv_ratio
         self.input_resolution = input_resolution
         # assert self.shift_size == 0, "No shift in MixFormer"
+        if global_attn:
+            self.template_global_attn = global_attention(dim=dim, depth=1, heads=num_heads, dim_head=dim // 8, mlp_dim=2048)
+            self.search_global_attn = global_attention(dim=dim, depth=1, heads=num_heads, dim_head=dim // 8, mlp_dim=2048)
+        
+        self.CBAM_template = build_CBAM_network(dim=dim)
+        self.CBAM_search = build_CBAM_network(dim=dim)
 
         if self.shift_size > 0:
             # calculate attention mask for SW-MSA
@@ -722,13 +731,20 @@ class BasicLayer(nn.Module):
                  downsample=None,
                  out_dim=0,
                  pos_type='sine',
-                 nums_templates=2):
+                 nums_templates=2,
+                 global_attn=False):
         super().__init__()
         self.window_size = window_size
         self.depth = depth
         self.conv_ratio = conv_ratio
         self.input_resolution = input_resolution
-        self.generate_pos = build_position_encoding2(dim, position_embedding_type=pos_type)
+        self.global_attn = global_attn
+        
+        if global_attn:
+            self.temp_pos_embedding = nn.Parameter(torch.randn(1, reduce(lambda x, y: x*y, (input_resolution.get('temp_sz')))//16, dim))
+            self.search_pos_embedding = nn.Parameter(torch.randn(1, reduce(lambda x, y: x*y, (input_resolution.get('search_sz')))//16, dim))
+
+        # self.generate_pos = build_position_encoding2(dim, position_embedding_type=pos_type)
 
         # build blocks
         self.blocks = nn.ModuleList([
@@ -748,18 +764,9 @@ class BasicLayer(nn.Module):
                 attn_drop=attn_drop,
                 drop_path=drop_path[i]
                 if isinstance(drop_path, (np.ndarray, list)) else drop_path,
-                norm_layer=norm_layer) for i in range(depth)
+                norm_layer=norm_layer,
+                global_attn=global_attn) for i in range(depth)
         ])
-
-        self.CrossAttn = build_CrossAttnention_network(
-            dim=dim, dropout=attn_drop, 
-            nhead=num_heads, 
-            dim_feedforward=2048, 
-            num_featurefusion_layers=1,
-            nums_templates=nums_templates)
-        
-        self.CBAM_template = build_CBAM_network(dim=dim)
-        self.CBAM_search = build_CBAM_network(dim=dim)
 
         # patch merging layer
         if downsample is not None:
@@ -767,7 +774,7 @@ class BasicLayer(nn.Module):
         else:
             self.downsample = None
 
-    def forward(self, x, t_H, t_W, s_H, s_W, key_padding_mask):
+    def forward(self, x, t_H, t_W, s_H, s_W):
         """ Forward function.
         
         Args:
@@ -775,47 +782,46 @@ class BasicLayer(nn.Module):
             H, W: Spatial resolution of the input feature.
         """
         # mask_t, mask_t_online, mask_s = mask[0][0], mask[0][1], mask[1]
-        mask_t, mask_s = key_padding_mask[0], key_padding_mask[1]
+        # mask_t, mask_s = key_padding_mask[0], key_padding_mask[1]
 
         for blk_idx, blk in enumerate(self.blocks):
             # siamese local attention extract
             blk.t_H, blk.t_W, blk.s_H, blk.s_W = t_H, t_W, s_H, s_W
-            attn_search, attn_template = blk(x, None)
+            attn_search, attn_template = blk(x, None) # [32, 4096, 24], [32, 1024, 24]
 
             # generate the position encoding and the mask
-            B_s, B_t, C = attn_search.size()[0], attn_template.size()[0], attn_search.size()[-1]
-            search_feat, template_feat = attn_search.reshape([B_s, s_H, s_W, C]).permute(0, 3, 1, 2), attn_template.reshape([B_t, t_H, t_W, C]).permute(0, 3, 1, 2)
-            if blk_idx == 0:
-                mask_t_down, mask_s_down = self._mask_down(mask_t, template_feat), self._mask_down(mask_s, search_feat)
-                pos_template, pos_search = self.generate_pos(template_feat, mask_t_down), self.generate_pos(search_feat, mask_s_down)
+            s_B, t_B, C = attn_search.size()[0], attn_template.size()[0], attn_search.size()[-1]
+            search_feat, template_feat = attn_search.reshape([s_B, s_H, s_W, C]).permute(0, 3, 1, 2), attn_template.reshape([t_B, t_H, t_W, C]).permute(0, 3, 1, 2)
             
             # CNN attention module
-            template_feat_cnn, search_feat_cnn = self.CBAM_template(template_feat), self.CBAM_search(search_feat)
+            template_feat_cnn, search_feat_cnn = blk.CBAM_template(template_feat), blk.CBAM_search(search_feat)
             template_feat_cnn += template_feat
             search_feat_cnn += search_feat
 
-            template_feat_cnn, mask_t_down, pos_template = template_feat_cnn.reshape(B_s, -1, C, t_H, t_W), mask_t_down.reshape(B_s, -1, t_H, t_W), pos_template.reshape(B_s, -1, C, t_H, t_W)
-            template_cross_feat, search_cross_feat = self.CrossAttn(template_feat_cnn, mask_t_down, search_feat_cnn, mask_s_down, pos_template, pos_search)
-            
-            # concat the features
-            template_cross_feat, mask_t_down = template_cross_feat.reshape(-1, t_H*t_W, B_s, C).transpose(0, 1).flatten(1, 2), mask_t_down.flatten(0, 1)
-            template_cross_feat, search_cross_feat = template_cross_feat.transpose(0, 1), search_cross_feat.transpose(0, 1)
-            # x = torch.cat([template_cross_feat, search_cross_feat], dim=1)
-            x = [template_cross_feat, search_cross_feat]
+            # Mutitemps reshape
+            template_feat_cnn = template_feat_cnn.reshape(s_B, -1, C, t_H, t_W)
+            src_temp, src_search = template_feat_cnn.flatten(3).permute(1, 0, 3, 2).flatten(0,1), search_feat_cnn.flatten(2).permute(0, 2, 1)
 
-        # encode the mask type
-        mask = [mask_t_down, mask_s_down]
+            if blk_idx == 0 and self.global_attn:
+                src_temp += self.temp_pos_embedding[:, :(t_H*t_W)]
+                src_search += self.search_pos_embedding[:, :(s_H*s_W)]
+            
+            if self.global_attn:
+                src_temp = blk.template_global_attn(src_temp)
+                src_search = blk.search_global_attn(src_search)
+
+            x = [src_temp, src_search]
 
         if self.downsample is not None:
-            template_down, search_down = self.downsample(template_cross_feat, search_cross_feat, t_H, t_W, s_H, s_W)
+            template_down, search_down = self.downsample(src_temp, src_search, t_H, t_W, s_H, s_W)
             if self.conv_ratio < 4:
                 s_H, s_W = (s_H + 1) // 2, (s_W + 1) // 2
                 t_H, t_W = (t_H + 1) // 2, (t_W + 1) // 2
             # x = torch.cat([template_down, search_down], dim=1)
             x = [template_down, search_down]
-            return t_H, t_W, x, s_H, s_W, mask
+            return t_H, t_W, x, s_H, s_W
         else:
-            return t_H, t_W, x, s_H, s_W, mask
+            return t_H, t_W, x, s_H, s_W
     
     def _mask_down(self, mask, features):
         if mask.dim() == 4:
@@ -1044,7 +1050,8 @@ class MixFormer(nn.Module):
                 out_dim=int(self.embed_dim[i_layer + 1]) 
                 if (i_layer < self.num_layers - 1) else 0, 
                 pos_type = pos_type,
-                nums_templates=nums_templates)
+                nums_templates=nums_templates,
+                global_attn=True if i_layer > 1 else False)
             self.layers.append(layer)
         
         self.apply(self._init_weights)
@@ -1067,17 +1074,10 @@ class MixFormer(nn.Module):
         templates_patch = templates_patch.flatten(2).permute(0, 2, 1)
         search_patch = search_patch.flatten(2).permute(0, 2, 1)
 
-        mask_t, mask_t_online, mask_s = mask[0][0], mask[0][1], mask[1]
-        
-        # x = torch.cat([template_patch, online_template_patch, search_patch], dim=1)
         x = [templates_patch, search_patch]
-        # x = torch.cat([templates_patch, search_patch], dim=1)
-        # if self.ape:
-        #     x = x + torch.cat([self.absolute_pos_embed_temp, self.absolute_pos_embed_search], dim=1) 
-        # x = self.pos_drop(x)
 
         for layer in self.layers:
-            t_H, t_W, x, s_H, s_W, mask = layer(x, t_H, t_W, s_H, s_W, mask)
+            t_H, t_W, x, s_H, s_W = layer(x, t_H, t_W, s_H, s_W)
 
         # templates_feature, search_feature = torch.split(x, [t_H*t_W, s_H*s_W], dim=1)
         templates_feature, search_feature = x[0], x[1]
@@ -1485,3 +1485,5 @@ def transt_loss(settings):
     device = torch.device(settings.device)
     criterion.to(device)
     return criterion
+
+
