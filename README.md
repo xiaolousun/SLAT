@@ -1,9 +1,9 @@
-# TransT-M - High-performance Transformer Tracking
+# Mix Attention Tracker Code based TransT
 Official implementation of the TransT-M, including training code and trained models.
 
 ## Installation
-This document contains detailed instructions for installing the necessary dependencied for **TransT-M**. The instructions 
-have been tested on Ubuntu 18.04 system.
+This document contains detailed instructions for installing the necessary dependencied for **SLAT**. The instructions 
+have been tested on Ubuntu 20.04 system.
 
 #### Install dependencies
 * Create and activate a conda environment 
@@ -30,7 +30,7 @@ Create the default environment setting files.
 
 ```bash
 # Change directory to <PATH_of_TransT>
-cd TransT
+cd SLAT
 
 # Environment settings for pytracking. Saved at pytracking/evaluation/local.py
 python -c "from pytracking.evaluation.environment import create_default_local_file; create_default_local_file()"
