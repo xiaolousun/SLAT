@@ -823,11 +823,11 @@ class BasicLayer(nn.Module):
         else:
             return t_H, t_W, x, s_H, s_W
     
-    def _mask_down(self, mask, features):
-        if mask.dim() == 4:
-            mask = mask.squeeze(0)
-        mask = F.interpolate(mask[None].float(), size=features.shape[-2:]).to(torch.bool)[0]
-        return mask
+    # def _mask_down(self, mask, features):
+    #     if mask.dim() == 4:
+    #         mask = mask.squeeze(0)
+    #     mask = F.interpolate(mask[None].float(), size=features.shape[-2:]).to(torch.bool)[0]
+    #     return mask
     
     def extra_repr(self):
         return "dim={}, input_resolution={}, depth={}".format(
