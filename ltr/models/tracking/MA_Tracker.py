@@ -20,6 +20,7 @@ import copy
 from ltr.models.neck.position_encoding import build_position_encoding2
 from ltr.models.neck.featurefusion_network import build_CrossAttnention_network
 from ltr.models.neck.convolutional_block_attention_module import build_CBAM_network
+from ltr.models.neck.vit_encoder import build_featurefusion_network
 
 from ltr.models.tracking.transt_seg import (TransTsegm, dice_loss, sigmoid_focal_loss)
 from ltr.models.tracking.transt_iouhead import TransTiouh
@@ -742,7 +743,9 @@ class BasicLayer(nn.Module):
         
         if global_attn:
             self.temp_pos_embedding = nn.Parameter(torch.randn(1, reduce(lambda x, y: x*y, (input_resolution.get('temp_sz')))//16, dim))
+            trunc_normal_(self.temp_pos_embedding, std=.02)
             self.search_pos_embedding = nn.Parameter(torch.randn(1, reduce(lambda x, y: x*y, (input_resolution.get('search_sz')))//16, dim))
+            trunc_normal_(self.search_pos_embedding, std=.02)
 
         # self.generate_pos = build_position_encoding2(dim, position_embedding_type=pos_type)
 
@@ -822,12 +825,6 @@ class BasicLayer(nn.Module):
             return t_H, t_W, x, s_H, s_W
         else:
             return t_H, t_W, x, s_H, s_W
-    
-    # def _mask_down(self, mask, features):
-    #     if mask.dim() == 4:
-    #         mask = mask.squeeze(0)
-    #     mask = F.interpolate(mask[None].float(), size=features.shape[-2:]).to(torch.bool)[0]
-    #     return mask
     
     def extra_repr(self):
         return "dim={}, input_resolution={}, depth={}".format(
@@ -1010,10 +1007,10 @@ class MixFormer(nn.Module):
             # self.add_parameter("absolute_pos_embed", self.absolute_pos_embed)
             # trunc_normal_(self.absolute_pos_embed)
             self.absolute_pos_embed_temp = nn.Parameter(torch.zeros(1, num_patches_temp, embed_dim))
-            trunc_normal_(self.absolute_pos_embed, std=.02)
+            trunc_normal_(self.absolute_pos_embed_temp, std=.02)
 
             self.absolute_pos_embed_search = nn.Parameter(torch.zeros(1, num_patches_search, embed_dim))
-            trunc_normal_(self.absolute_pos_embed, std=.02)
+            trunc_normal_(self.absolute_pos_embed_search, std=.02)
 
         self.pos_drop = nn.Dropout(p=drop_rate)
 
@@ -1023,16 +1020,24 @@ class MixFormer(nn.Module):
         pos_type = kwargs.get('position_encoding', 'sine')
         nums_templates = kwargs.get('nums_templates', 1)
         # input_resolution = {'temp_sz':128, 'search_sz':256}
+        self.input_resolution = []
+        self.cross_attn = build_featurefusion_network(depth=3, sm_dim=self.embed_dim[-1], lg_dim=self.embed_dim[-1], \
+                            cross_attn_heads=8, cross_attn_depth=2, cross_attn_dim_head = 64, dropout = 0.)
+        self.avg = torch.nn.AdaptiveAvgPool1d(1)
 
         # build layers
         self.layers = nn.ModuleList()
         for i_layer in range(self.num_layers):
+            input_resolution = {'temp_sz':(img_size.get('temp_sz') // (2 ** i_layer), img_size.get('temp_sz') // (2 ** i_layer)), \
+                                'search_sz':(img_size.get('search_sz') // (2 ** i_layer), img_size.get('search_sz') // (2 ** i_layer))} \
+                                    if i_layer < self.num_layers - 1 else \
+                                {'temp_sz':(img_size.get('temp_sz') // (2 ** (i_layer-1)), img_size.get('temp_sz') // (2 ** (i_layer-1))), \
+                                'search_sz':(img_size.get('search_sz') // (2 ** (i_layer-1)), img_size.get('search_sz') // (2 ** (i_layer-1)))}
             layer = BasicLayer(
                 dim=int(self.embed_dim[i_layer]),
                 # input_resolution=(64 // (2 ** i_layer),
                 #                   64 // (2 ** i_layer)),
-                input_resolution={'temp_sz':(img_size.get('temp_sz') // (2 ** i_layer), img_size.get('temp_sz') // (2 ** i_layer)), \
-                                  'search_sz':(img_size.get('search_sz') // (2 ** i_layer), img_size.get('search_sz') // (2 ** i_layer))},
+                input_resolution=input_resolution,
                 conv_ratio = self.conv_ratio[i_layer],
                 depth=depths[i_layer],
                 num_heads=num_heads[i_layer],
@@ -1053,6 +1058,7 @@ class MixFormer(nn.Module):
                 nums_templates=nums_templates,
                 global_attn=True if i_layer > 1 else False)
             self.layers.append(layer)
+            self.input_resolution.append(input_resolution)
         
         self.apply(self._init_weights)
 
@@ -1064,6 +1070,11 @@ class MixFormer(nn.Module):
         elif isinstance(m, nn.LayerNorm):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
+        # elif isinstance(m, nn.Conv2d):
+        #         nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+        # elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+        #     nn.init.constant_(m.weight, 1)
+        #     nn.init.constant_(m.bias, 0)
     
     def forward_features(self, templates, search, mask):
         templates_patch = self.patch_embed_temp(templates)
@@ -1081,14 +1092,39 @@ class MixFormer(nn.Module):
 
         # templates_feature, search_feature = torch.split(x, [t_H*t_W, s_H*s_W], dim=1)
         templates_feature, search_feature = x[0], x[1]
-        templates_feature, search_feature = templates_feature.permute(0, 2, 1).reshape(t_B, -1, t_H, t_W), search_feature.permute(0, 2, 1).reshape(s_B, -1, s_H, s_W)
-        return search_feature
+        sm_tokens, lg_tokens = templates_feature, search_feature
+
+        # sm_tokens = self.SwinTransformer_sm(img_s) # [1, 8*8, 512]
+        b, hw, c = sm_tokens.shape[0], sm_tokens.shape[1], sm_tokens.shape[2]
+
+        sm_cls = self.avg(sm_tokens.permute(0,2,1)).permute(0,2,1)
+        sm_tokens = self.crop_z_feature(sm_tokens, b, hw, c)
+        sm_tokens = torch.cat((sm_cls, sm_tokens), dim=1)
+
+        # lg_tokens = self.SwinTransformer_sm(img_l)  # [1, 16*16, 512]
+        lg_cls = self.avg(lg_tokens.permute(0,2,1)).permute(0,2,1)
+        lg_tokens = torch.cat((lg_cls, lg_tokens), dim=1)
+        sm_tokens, lg_tokens, lg_tokens_fusion = self.cross_attn(sm_tokens, lg_tokens)
+
+        lg_track_final = torch.cat([lg_tokens, lg_tokens_fusion], dim=2)  # [1, 196, 1024]
+        lg_track_final_reshape = lg_track_final.permute(1,0,2)# [196=14*14, 1, 512]
+        reg_cls_feat = lg_track_final_reshape.unsqueeze(0).transpose(1, 2)
+
+        return reg_cls_feat
 
     def forward(self, template, search, mask):
-        search_feature = self.forward_features(template, search, mask)
+        reg_cls_feat = self.forward_features(template, search, mask)
         # seq_dict_merge = self._merge_features(seq_dict)
-        search_feature = search_feature.flatten(2).transpose(1, 2).unsqueeze(0)
-        return search_feature
+        # search_feature = search_feature.flatten(2).transpose(1, 2).unsqueeze(0)
+        return reg_cls_feat
+    
+    def crop_z_feature(self, sm_tokens_lg, b, hw, c):
+        h= int(hw**0.5)
+        sm_tokens_lg_bhwc = sm_tokens_lg.reshape(b, h, -1, c)
+        crop_z_feature = sm_tokens_lg_bhwc[:, 3:10, 3:10, :]
+        crop_z_feature = crop_z_feature.reshape(b, -1, c)
+
+        return crop_z_feature
 
     def flops(self):
         flops = 0

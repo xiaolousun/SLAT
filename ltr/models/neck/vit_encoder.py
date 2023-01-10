@@ -182,12 +182,9 @@ class CrossTransformer_fusion(nn.Module):
 class MultiScaleEncoder(nn.Module):
     def __init__(
         self,
-        *,
         depth,
         sm_dim,
         lg_dim,
-        sm_enc_params,
-        lg_enc_params,
         cross_attn_heads,
         cross_attn_depth,
         cross_attn_dim_head = 64,
@@ -250,5 +247,14 @@ class ImageEmbedder(nn.Module):
         x += self.pos_embedding[:, :(n + 1)]
 
         return self.dropout(x)
+
+def build_featurefusion_network(depth, sm_dim,lg_dim,cross_attn_heads,cross_attn_depth, cross_attn_dim_head = 64, dropout = 0.):
+    return MultiScaleEncoder(depth,
+                            sm_dim,
+                            lg_dim,
+                            cross_attn_heads,
+                            cross_attn_depth,
+                            cross_attn_dim_head = cross_attn_dim_head,
+                            dropout = dropout)
 
 

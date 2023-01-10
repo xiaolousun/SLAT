@@ -9,7 +9,7 @@ class ChannelAttentionModule(nn.Module):
 
         self.shared_MLP = nn.Sequential(
             nn.Conv2d(channel, channel // ratio, 1, bias=False),
-            nn.ReLU(),
+            nn.GELU(),
             nn.Conv2d(channel // ratio, channel, 1, bias=False)
         )
         self.sigmoid = nn.Sigmoid()
