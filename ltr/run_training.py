@@ -12,6 +12,8 @@ if env_path not in sys.path:
     sys.path.append(env_path)
 import ltr.admin.settings as ws_settings
 
+import warnings
+warnings.filterwarnings('ignore')
 
 def run_training(train_module, train_name, cudnn_benchmark=True):
     """Run a train scripts in train_settings.

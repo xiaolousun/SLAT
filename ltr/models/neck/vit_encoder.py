@@ -182,7 +182,6 @@ class CrossTransformer_fusion(nn.Module):
 class MultiScaleEncoder(nn.Module):
     def __init__(
         self,
-        depth,
         sm_dim,
         lg_dim,
         cross_attn_heads,
@@ -194,10 +193,9 @@ class MultiScaleEncoder(nn.Module):
         self.layers = nn.ModuleList([])
         self.layers_fusion = nn.ModuleList([])
 
-        for _ in range(depth):
-            self.layers.append(nn.ModuleList([
-                CrossTransformer(sm_dim=sm_dim, lg_dim=lg_dim, depth = cross_attn_depth, heads = cross_attn_heads, dim_head = cross_attn_dim_head, dropout = dropout)
-            ]))
+        self.layers.append(nn.ModuleList([
+            CrossTransformer(sm_dim=sm_dim, lg_dim=lg_dim, depth = cross_attn_depth, heads = cross_attn_heads, dim_head = cross_attn_dim_head, dropout = dropout)
+        ]))
 
         self.layers_fusion.append(nn.ModuleList([
             CrossTransformer_fusion(sm_dim=sm_dim, lg_dim=lg_dim, depth=1, heads=cross_attn_heads,
@@ -248,9 +246,8 @@ class ImageEmbedder(nn.Module):
 
         return self.dropout(x)
 
-def build_featurefusion_network(depth, sm_dim,lg_dim,cross_attn_heads,cross_attn_depth, cross_attn_dim_head = 64, dropout = 0.):
-    return MultiScaleEncoder(depth,
-                            sm_dim,
+def build_featurefusion_network(sm_dim, lg_dim, cross_attn_depth, cross_attn_heads,cross_attn_dim_head = 64, dropout = 0.):
+    return MultiScaleEncoder(sm_dim,
                             lg_dim,
                             cross_attn_heads,
                             cross_attn_depth,

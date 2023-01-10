@@ -400,8 +400,8 @@ class MixingBlock(nn.Module):
         self.input_resolution = input_resolution
         # assert self.shift_size == 0, "No shift in MixFormer"
         if global_attn:
-            self.template_global_attn = global_attention(dim=dim, depth=1, heads=num_heads, dim_head=dim // 8, mlp_dim=2048)
-            self.search_global_attn = global_attention(dim=dim, depth=1, heads=num_heads, dim_head=dim // 8, mlp_dim=2048)
+            self.template_global_attn = global_attention(dim=dim, depth=1, heads=num_heads, dim_head=dim // num_heads, mlp_dim=int(mlp_ratio)*dim)
+            self.search_global_attn = global_attention(dim=dim, depth=1, heads=num_heads, dim_head=dim // num_heads, mlp_dim=int(mlp_ratio)*dim)
         
         self.CBAM_template = build_CBAM_network(dim=dim)
         self.CBAM_search = build_CBAM_network(dim=dim)
@@ -742,9 +742,9 @@ class BasicLayer(nn.Module):
         self.global_attn = global_attn
         
         if global_attn:
-            self.temp_pos_embedding = nn.Parameter(torch.randn(1, reduce(lambda x, y: x*y, (input_resolution.get('temp_sz')))//16, dim))
+            self.temp_pos_embedding = nn.Parameter(torch.randn(1, reduce(lambda x, y: x*y, (input_resolution.get('temp_sz'))), dim))
             trunc_normal_(self.temp_pos_embedding, std=.02)
-            self.search_pos_embedding = nn.Parameter(torch.randn(1, reduce(lambda x, y: x*y, (input_resolution.get('search_sz')))//16, dim))
+            self.search_pos_embedding = nn.Parameter(torch.randn(1, reduce(lambda x, y: x*y, (input_resolution.get('search_sz'))), dim))
             trunc_normal_(self.search_pos_embedding, std=.02)
 
         # self.generate_pos = build_position_encoding2(dim, position_embedding_type=pos_type)
@@ -962,7 +962,7 @@ class MixFormer(nn.Module):
                  attn_drop_rate=0.,
                  drop_path_rate=0.1,
                  norm_layer=nn.LayerNorm,
-                 ape=False,
+                 ape=True,
                  patch_norm=True,
                  use_checkpoint=False,
                  **kwargs):
@@ -977,7 +977,8 @@ class MixFormer(nn.Module):
         self.patch_norm = patch_norm
         self.num_features = int(self.embed_dim[-1])
         self.mlp_ratio = mlp_ratio
-        self.conv_ratio = [2 ** i_layer for i_layer in range(self.num_layers)]
+        # nomal conv ratio
+        self.conv_ratio = [2 ** i_layer for i_layer in range(self.num_layers)] 
 
         # split image into patches
         self.patch_embed_temp = ConvEmbed(
@@ -986,7 +987,7 @@ class MixFormer(nn.Module):
             in_chans=in_chans,
             embed_dim=embed_dim[0],
             norm_layer=norm_layer if self.patch_norm else None)
-        num_patches_temp = self.patch_embed_temp.num_patches
+        num_patches_temp = self.patch_embed_temp.num_patches // (patch_size*self.conv_ratio[-2])
         # patches_resolution = self.patch_embed.patches_resolution
         # self.patches_resolution = patches_resolution
 
@@ -996,47 +997,42 @@ class MixFormer(nn.Module):
             in_chans=in_chans,
             embed_dim=embed_dim[0],
             norm_layer=norm_layer if self.patch_norm else None)
-        num_patches_search = self.patch_embed_search.num_patches
+        num_patches_search = self.patch_embed_search.num_patches // (patch_size*self.conv_ratio[-2])
         # patches_resolution = self.patch_embed.patches_resolution
         # self.patches_resolution = patches_resolution
 
         # absolute position embedding
         if self.ape:
-            # self.absolute_pos_embed = self.create_parameter(
-            #     shape=(1, num_patches, self.embed_dim[0]), default_initializer=zeros_)
-            # self.add_parameter("absolute_pos_embed", self.absolute_pos_embed)
-            # trunc_normal_(self.absolute_pos_embed)
-            self.absolute_pos_embed_temp = nn.Parameter(torch.zeros(1, num_patches_temp, embed_dim))
+            self.absolute_pos_embed_temp = nn.Parameter(torch.zeros(1, num_patches_temp, embed_dim[-1]))
             trunc_normal_(self.absolute_pos_embed_temp, std=.02)
 
-            self.absolute_pos_embed_search = nn.Parameter(torch.zeros(1, num_patches_search, embed_dim))
+            self.absolute_pos_embed_search = nn.Parameter(torch.zeros(1, num_patches_search, embed_dim[-1]))
             trunc_normal_(self.absolute_pos_embed_search, std=.02)
 
-        self.pos_drop = nn.Dropout(p=drop_rate)
+        # self.pos_drop = nn.Dropout(p=drop_rate)
 
         # stochastic depth
         dpr = np.linspace(0, drop_path_rate,
                           sum(depths)).tolist()  # stochastic depth decay rule
         pos_type = kwargs.get('position_encoding', 'sine')
         nums_templates = kwargs.get('nums_templates', 1)
-        # input_resolution = {'temp_sz':128, 'search_sz':256}
+        
         self.input_resolution = []
-        self.cross_attn = build_featurefusion_network(depth=3, sm_dim=self.embed_dim[-1], lg_dim=self.embed_dim[-1], \
-                            cross_attn_heads=8, cross_attn_depth=2, cross_attn_dim_head = 64, dropout = 0.)
+        self.cross_attn = build_featurefusion_network(sm_dim=self.embed_dim[-1], lg_dim=self.embed_dim[-1], \
+                            cross_attn_depth=2, cross_attn_heads=num_heads[-1],  cross_attn_dim_head = self.embed_dim[-1] // num_heads[-1], dropout = 0.)
         self.avg = torch.nn.AdaptiveAvgPool1d(1)
 
         # build layers
         self.layers = nn.ModuleList()
+        temp_sz, search_sz = img_size.get('temp_sz'), img_size.get('search_sz')
         for i_layer in range(self.num_layers):
-            input_resolution = {'temp_sz':(img_size.get('temp_sz') // (2 ** i_layer), img_size.get('temp_sz') // (2 ** i_layer)), \
-                                'search_sz':(img_size.get('search_sz') // (2 ** i_layer), img_size.get('search_sz') // (2 ** i_layer))} \
-                                    if i_layer < self.num_layers - 1 else \
-                                {'temp_sz':(img_size.get('temp_sz') // (2 ** (i_layer-1)), img_size.get('temp_sz') // (2 ** (i_layer-1))), \
-                                'search_sz':(img_size.get('search_sz') // (2 ** (i_layer-1)), img_size.get('search_sz') // (2 ** (i_layer-1)))}
+            downsample_ratio = 2 ** i_layer * patch_size if i_layer < self.num_layers - 1 else 2 ** (i_layer-1)*patch_size
+            temp_sz_downsample, search_sz_downsample = temp_sz // downsample_ratio, search_sz // downsample_ratio
+            input_resolution = {'temp_sz':(temp_sz_downsample, temp_sz_downsample), \
+                                'search_sz':(search_sz_downsample, search_sz_downsample)}
+                                
             layer = BasicLayer(
                 dim=int(self.embed_dim[i_layer]),
-                # input_resolution=(64 // (2 ** i_layer),
-                #                   64 // (2 ** i_layer)),
                 input_resolution=input_resolution,
                 conv_ratio = self.conv_ratio[i_layer],
                 depth=depths[i_layer],
@@ -1070,13 +1066,13 @@ class MixFormer(nn.Module):
         elif isinstance(m, nn.LayerNorm):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
-        # elif isinstance(m, nn.Conv2d):
-        #         nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-        # elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
-        #     nn.init.constant_(m.weight, 1)
-        #     nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+        elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+            nn.init.constant_(m.weight, 1)
+            nn.init.constant_(m.bias, 0)
     
-    def forward_features(self, templates, search, mask):
+    def forward_features(self, templates, search):
         templates_patch = self.patch_embed_temp(templates)
         search_patch = self.patch_embed_search(search)
         t_B, t_C, t_H, t_W = templates_patch.size()
@@ -1092,7 +1088,7 @@ class MixFormer(nn.Module):
 
         # templates_feature, search_feature = torch.split(x, [t_H*t_W, s_H*s_W], dim=1)
         templates_feature, search_feature = x[0], x[1]
-        sm_tokens, lg_tokens = templates_feature, search_feature
+        sm_tokens, lg_tokens = templates_feature+self.absolute_pos_embed_temp, search_feature+self.absolute_pos_embed_search
 
         # sm_tokens = self.SwinTransformer_sm(img_s) # [1, 8*8, 512]
         b, hw, c = sm_tokens.shape[0], sm_tokens.shape[1], sm_tokens.shape[2]
@@ -1112,10 +1108,8 @@ class MixFormer(nn.Module):
 
         return reg_cls_feat
 
-    def forward(self, template, search, mask):
-        reg_cls_feat = self.forward_features(template, search, mask)
-        # seq_dict_merge = self._merge_features(seq_dict)
-        # search_feature = search_feature.flatten(2).transpose(1, 2).unsqueeze(0)
+    def forward(self, template, search):
+        reg_cls_feat = self.forward_features(template, search)
         return reg_cls_feat
     
     def crop_z_feature(self, sm_tokens_lg, b, hw, c):
@@ -1147,27 +1141,20 @@ class MixTracking(nn.Module):
         """
         super().__init__()
         num_classes = 1
+        hidden_dim = hidden_dim*2
         self.class_embed = MLP(hidden_dim, hidden_dim, num_classes + 1, 3)
         self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
         self.backbone = backbone
 
     def forward(self, search, templates):
-
-        if not isinstance(search, NestedTensor):
-            search = nested_tensor_from_tensor(search)
-        
+       
         bs, n_t, c, h, w = templates.shape
         templates = templates.reshape(bs * n_t, c, h, w)
 
-        if not isinstance(templates, NestedTensor):
-            templates = nested_tensor_from_tensor(templates)
-        
-        mask = [templates.mask, search.mask]
+        reg_cls_feat = self.backbone(templates, search)
 
-        search_feature = self.backbone(templates.tensors, search.tensors, mask)
-
-        outputs_class = self.class_embed(search_feature)
-        outputs_coord = self.bbox_embed(search_feature).sigmoid()
+        outputs_class = self.class_embed(reg_cls_feat)
+        outputs_coord = self.bbox_embed(reg_cls_feat).sigmoid()
         out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
         return out
     
