@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 class ChannelAttentionModule(nn.Module):
     def __init__(self, channel, ratio=16):
@@ -47,6 +48,27 @@ class CBAM(nn.Module):
         out = self.spatial_attention(out) * out
         return out
 
+class CNN_Block(nn.Module):
+    '''Depthwise conv + Pointwise conv'''
+    def __init__(self, in_planes, out_planes, stride=1):
+        super(CNN_Block, self).__init__()
+        self.conv1 = nn.Conv2d\
+            (in_planes, in_planes, kernel_size=3, stride=stride, 
+             padding=1, groups=in_planes, bias=False)
+        self.bn1 = nn.BatchNorm2d(in_planes)
+        self.conv2 = nn.Conv2d\
+            (in_planes, out_planes, kernel_size=1, 
+            stride=1, padding=0, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_planes)
+
+    def forward(self, x):
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = F.relu(self.bn2(self.conv2(out)))
+        return out
+
 
 def build_CBAM_network(dim):
     return CBAM(channel=dim)
+
+def build_CNN_Block(in_planes, out_planes, stride=1):
+    return CNN_Block(in_planes, out_planes, stride=stride)

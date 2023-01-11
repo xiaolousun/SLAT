@@ -51,7 +51,7 @@ def main():
     parser.add_argument('--train_name', 
                         # default='transt_dp',
                         # default='SA_Tracker_dp',
-                        default='MA_Tracker_dp',
+                        default='MA_Tracker2_dp',
                         type=str, help='Name of the train settings file.')
     parser.add_argument('--cudnn_benchmark', type=bool, default=True, help='Set cudnn benchmark on (1) or off (0) (default is on).')
 

@@ -19,7 +19,7 @@ from typing import Optional
 import copy
 from ltr.models.neck.position_encoding import build_position_encoding2
 from ltr.models.neck.featurefusion_network import build_CrossAttnention_network
-from ltr.models.neck.convolutional_block_attention_module import build_CBAM_network
+from ltr.models.neck.convolutional_block_attention_module import build_CBAM_network, build_CNN_Block
 from ltr.models.neck.vit_encoder import build_featurefusion_network
 
 from ltr.models.tracking.transt_seg import (TransTsegm, dice_loss, sigmoid_focal_loss)
@@ -403,8 +403,10 @@ class MixingBlock(nn.Module):
             self.template_global_attn = global_attention(dim=dim, depth=1, heads=num_heads, dim_head=dim // num_heads, mlp_dim=int(mlp_ratio)*dim)
             self.search_global_attn = global_attention(dim=dim, depth=1, heads=num_heads, dim_head=dim // num_heads, mlp_dim=int(mlp_ratio)*dim)
         
-        self.CBAM_template = build_CBAM_network(dim=dim)
-        self.CBAM_search = build_CBAM_network(dim=dim)
+        # self.CBAM_template = build_CBAM_network(dim=dim)
+        # self.CBAM_search = build_CBAM_network(dim=dim)
+        self.CNN_template = build_CNN_Block(in_planes=dim, out_planes=dim)
+        self.CNN_search = build_CNN_Block(in_planes=dim, out_planes=dim)
 
         if self.shift_size > 0:
             # calculate attention mask for SW-MSA
@@ -795,11 +797,13 @@ class BasicLayer(nn.Module):
             # generate the position encoding and the mask
             s_B, t_B, C = attn_search.size()[0], attn_template.size()[0], attn_search.size()[-1]
             search_feat, template_feat = attn_search.reshape([s_B, s_H, s_W, C]).permute(0, 3, 1, 2), attn_template.reshape([t_B, t_H, t_W, C]).permute(0, 3, 1, 2)
+            residual_temp, residual_search = template_feat, search_feat
             
             # CNN attention module
-            template_feat_cnn, search_feat_cnn = blk.CBAM_template(template_feat), blk.CBAM_search(search_feat)
-            template_feat_cnn += template_feat
-            search_feat_cnn += search_feat
+            # template_feat_cnn, search_feat_cnn = blk.CBAM_template(template_feat), blk.CBAM_search(search_feat)
+            template_feat_cnn, search_feat_cnn = blk.CNN_template(template_feat), blk.CNN_search(search_feat)
+            template_feat_cnn = residual_temp + template_feat_cnn
+            search_feat_cnn = residual_search + search_feat_cnn
 
             # Mutitemps reshape
             template_feat_cnn = template_feat_cnn.reshape(s_B, -1, C, t_H, t_W)

@@ -3,7 +3,7 @@ from ltr.dataset import Lasot, MSCOCOSeq, Got10k, TrackingNet
 from ltr.dataset.trdataset import Youtube_VOS, Saliency
 from ltr.data import processing, sampler, LTRLoader
 # import ltr.models.tracking.transt as transt_models
-import ltr.models.tracking.MA_Tracker as MAT_models
+import ltr.models.tracking.MA_Tracker2 as MAT_models
 from ltr import actors
 # from ltr.trainers.transt_trainer import TransTLTRTrainer
 from ltr.trainers.SA_Tracker_trainer import TransTLTRTrainer
@@ -19,8 +19,8 @@ def run(settings):
     settings.local_rank = 0 # to adapt the ddp trainner
     settings.device = 'cuda'
     settings.description = 'TransT with default settings.'
-    settings.batch_size = 8
-    settings.num_workers = 0
+    settings.batch_size = 32
+    settings.num_workers = 4
     settings.multi_gpu = True
     settings.print_interval = 1
     settings.normalize_mean = [0.485, 0.456, 0.406]
@@ -52,7 +52,7 @@ def run(settings):
     settings.freeze_transt = False
     # settings.transt_path = '/home/cx/cx1/TransT_experiments/models/N4_mt_2tp/TransT_ep0464.pth.tar'
     settings.transt_path = None
-    settings.env.workspace_dir = '/home/xlsun/xlsun/code/SLAT/results/MA_Tracker'
+    settings.env.workspace_dir = '/home/xlsun/xlsun/code/SLAT/results/MA_Tracker2'
     settings.env.tensorboard_dir = settings.env.workspace_dir + '/tensorboard/'
     settings.logdir = settings.env.workspace_dir + '/logs/'
 
@@ -164,4 +164,4 @@ def run(settings):
         os.system('cp -r %s %s'%(config_dir, settings.env.workspace_dir))
 
     # Run training (set fail_safe=False if you are debugging)
-    trainer.train(settings.total_epoches, transt_path=settings.transt_path, load_latest=False, fail_safe=False)
+    trainer.train(settings.total_epoches, transt_path=settings.transt_path, load_latest=True, fail_safe=False)
